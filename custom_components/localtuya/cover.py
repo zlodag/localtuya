@@ -18,6 +18,8 @@ from homeassistant.components.cover import (
 from .common import LocalTuyaEntity, async_setup_entry
 from .const import (
     CONF_COMMANDS_SET,
+    CONF_STOP_ENABLED,
+    CONF_CURRENT_STATUS_DP,
     CONF_CURRENT_POSITION_DP,
     CONF_POSITION_INVERTED,
     CONF_POSITIONING_MODE,
@@ -34,6 +36,10 @@ COVER_12_CMDS = "1_2_3"
 COVER_MODE_NONE = "none"
 COVER_MODE_POSITION = "position"
 COVER_MODE_TIMED = "timed"
+COVER_STATUS_OPENED = "opened"
+COVER_STATUS_CLOSED = "closed"
+COVER_STATUS_OPENING = "openning"
+COVER_STATUS_CLOSING = "closing"
 COVER_TIMEOUT_TOLERANCE = 3.0
 
 DEFAULT_COMMANDS_SET = COVER_ONOFF_CMDS
@@ -47,9 +53,11 @@ def flow_schema(dps):
         vol.Optional(CONF_COMMANDS_SET): vol.In(
             [COVER_ONOFF_CMDS, COVER_OPENCLOSE_CMDS, COVER_FZZZ_CMDS, COVER_12_CMDS]
         ),
+        vol.Optional(CONF_STOP_ENABLED, default=True): bool,
         vol.Optional(CONF_POSITIONING_MODE, default=DEFAULT_POSITIONING_MODE): vol.In(
             [COVER_MODE_NONE, COVER_MODE_POSITION, COVER_MODE_TIMED]
         ),
+        vol.Optional(CONF_CURRENT_STATUS_DP): vol.In(dps),
         vol.Optional(CONF_CURRENT_POSITION_DP): vol.In(dps),
         vol.Optional(CONF_SET_POSITION_DP): vol.In(dps),
         vol.Optional(CONF_POSITION_INVERTED, default=False): bool,
@@ -72,7 +80,7 @@ class LocaltuyaCover(LocalTuyaEntity, CoverEntity):
         self._close_cmd = commands_set.split("_")[1]
         self._stop_cmd = commands_set.split("_")[2]
         self._timer_start = time.time()
-        self._state = self._stop_cmd
+        self._state = COVER_STATUS_CLOSED if self.has_config(CONF_CURRENT_STATUS_DP) else self._stop_cmd
         self._previous_state = self._state
         self._current_cover_position = 0
         _LOGGER.debug("Initialized cover [%s]", self.name)
@@ -80,7 +88,9 @@ class LocaltuyaCover(LocalTuyaEntity, CoverEntity):
     @property
     def supported_features(self):
         """Flag supported features."""
-        supported_features = SUPPORT_OPEN | SUPPORT_CLOSE | SUPPORT_STOP
+        supported_features = SUPPORT_OPEN | SUPPORT_CLOSE
+        if self._config[CONF_STOP_ENABLED]:
+            supported_features |= SUPPORT_STOP
         if self._config[CONF_POSITIONING_MODE] != COVER_MODE_NONE:
             supported_features = supported_features | SUPPORT_SET_POSITION
         return supported_features
@@ -96,17 +106,22 @@ class LocaltuyaCover(LocalTuyaEntity, CoverEntity):
     def is_opening(self):
         """Return if cover is opening."""
         state = self._state
-        return state == self._open_cmd
+        self.debug("is_opening: %s", state == (COVER_STATUS_OPENING if self.has_config(CONF_CURRENT_STATUS_DP) else self._open_cmd))
+        return state == (COVER_STATUS_OPENING if self.has_config(CONF_CURRENT_STATUS_DP) else self._open_cmd)
 
     @property
     def is_closing(self):
         """Return if cover is closing."""
         state = self._state
-        return state == self._close_cmd
+        self.debug("is_closing: %s", state == (COVER_STATUS_CLOSING if self.has_config(CONF_CURRENT_STATUS_DP) else self._close_cmd))
+        return state == (COVER_STATUS_CLOSING if self.has_config(CONF_CURRENT_STATUS_DP) else self._close_cmd)
 
     @property
     def is_closed(self):
         """Return if the cover is closed or not."""
+        if self.has_config(CONF_CURRENT_STATUS_DP):
+            self.debug("is_closed: %s", self._state == COVER_STATUS_CLOSED)
+            return self._state == COVER_STATUS_CLOSED
         if self._config[CONF_POSITIONING_MODE] == COVER_MODE_NONE:
             return None
 
@@ -191,11 +206,17 @@ class LocaltuyaCover(LocalTuyaEntity, CoverEntity):
     def status_updated(self):
         """Device status was updated."""
         self._previous_state = self._state
-        self._state = self.dps(self._dp_id)
-        if self._state.isupper():
-            self._open_cmd = self._open_cmd.upper()
-            self._close_cmd = self._close_cmd.upper()
-            self._stop_cmd = self._stop_cmd.upper()
+
+        if self.has_config(CONF_CURRENT_STATUS_DP):
+            self._state = self.dps_conf(CONF_CURRENT_STATUS_DP)
+        else:
+            self._state = self.dps(self._dp_id)
+            if self._state.isupper():
+                self._open_cmd = self._open_cmd.upper()
+                self._close_cmd = self._close_cmd.upper()
+                self._stop_cmd = self._stop_cmd.upper()
+
+        self.debug("status_updated - New state '%s'", self._state)
 
         if self.has_config(CONF_CURRENT_POSITION_DP):
             curr_pos = self.dps_conf(CONF_CURRENT_POSITION_DP)
